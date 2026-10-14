@@ -35,10 +35,10 @@ async function main(): Promise<void> {
     case 'token-create': output = { token: await vault.createToken(token, args.label || '', String(args.scopes || '').split(',').filter(Boolean) as Scope[]) }; break;
     case 'put': output = await vault.put(token, name, String(args.value || ''), { ...(args.expires ? { expiresAt: args.expires } : {}), ...(args.metadata ? { metadata: JSON.parse(args.metadata) } : {}) }); break;
     case 'get': output = await vault.get(token, name); break;
-    case 'list': output = vault.list(token); break;
+    case 'list': output = await vault.list(token); break;
     case 'rotate': output = await vault.rotate(token, name, String(args.value || ''), args.expires); break;
     case 'revoke': await vault.revoke(token, name); output = { revoked: name }; break;
-    case 'audit': output = vault.auditLog(token); break;
+    case 'audit': output = await vault.auditLog(token); break;
     default: throw new VaultError(`Unknown command: ${command}`, 'INVALID');
   }
   console.log(JSON.stringify(output, null, 2));

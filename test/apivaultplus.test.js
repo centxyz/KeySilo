@@ -71,5 +71,35 @@ test('audit events never contain secret values', async () => {
   const { vault, admin } = await fixture();
   await vault.put(admin, 'audit/key', 'never-log-this-value');
   await vault.get(admin, 'audit/key');
-  assert.equal(JSON.stringify(vault.auditLog(admin)).includes('never-log-this-value'), false);
+  assert.equal(JSON.stringify(await vault.auditLog(admin)).includes('never-log-this-value'), false);
+});
+
+test('denied authorization and secret reads survive reloading without another successful operation', async () => {
+  const { vault, file, admin } = await fixture();
+  await vault.put(admin, 'revoked', 'private-value');
+  await vault.put(admin, 'expired', 'private-value', { expiresAt: '2030-01-02T00:00:00.000Z' });
+  await vault.revoke(admin, 'revoked');
+  const reader = await vault.createToken(admin, 'reader', ['secrets:read']);
+  await assert.rejects(vault.rotate(reader, 'revoked', 'replacement'), error => error.code === 'AUTH');
+  await assert.rejects(vault.list('invalid-token'), error => error.code === 'AUTH');
+  await assert.rejects(vault.auditLog(reader), error => error.code === 'AUTH');
+  await assert.rejects(vault.get(admin, 'revoked'), error => error.code === 'REVOKED');
+  const future = new APIVaultPlus(file, MASTER, () => new Date('2030-01-03T00:00:00.000Z'));
+  await future.load();
+  await assert.rejects(future.get(admin, 'expired'), error => error.code === 'EXPIRED');
+  const restored = new APIVaultPlus(file, MASTER, FIXED_NOW);
+  await restored.load();
+  const denied = (await restored.auditLog(admin)).filter(entry => entry.outcome === 'denied');
+  assert.equal(denied.length, 5);
+  assert.deepEqual(denied.map(entry => entry.target), ['secrets:rotate', 'secrets:read', 'audit:read', 'revoked', 'expired']);
+  assert.equal(JSON.stringify(denied).includes('private-value'), false);
+});
+
+test('invalid rotation expiry does not mutate the existing secret', async () => {
+  const { vault, admin } = await fixture();
+  await vault.put(admin, 'stable', 'original');
+  await assert.rejects(vault.rotate(admin, 'stable', 'replacement', 'invalid-date'), error => error.code === 'INVALID');
+  const result = await vault.get(admin, 'stable');
+  assert.equal(result.value, 'original');
+  assert.equal(result.secret.version, 1);
 });

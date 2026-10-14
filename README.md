@@ -58,6 +58,8 @@ npm run build
 
 The test suite checks encryption at rest, persistence, scoped authorization, rotation, expiry, revocation, authenticated tamper detection, wrong-key rejection, and audit-log hygiene.
 
+Library callers must await `list(token)` and `auditLog(token)`, as they now return promises. Denied authorization, expired-secret reads, and revoked-secret reads are persisted before the operation rejects. CLI commands keep their existing syntax and JSON output.
+
 ## License
 
 MIT © cent

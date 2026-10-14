@@ -51,7 +51,7 @@ export class APIVaultPlus {
   }
 
   async createToken(actorToken: string, label: string, scopes: Scope[]): Promise<string> {
-    const actor = this.authorize(actorToken, 'tokens:create');
+    const actor = await this.authorize(actorToken, 'tokens:create');
     if (!label.trim() || !scopes.length || scopes.some(scope => !ALL_SCOPES.includes(scope))) throw new VaultError('A label and valid scopes are required', 'INVALID');
     const token = this.issueToken(label.trim(), [...new Set(scopes)]);
     this.audit('token.create', actor.label, label, 'allowed');
@@ -60,7 +60,7 @@ export class APIVaultPlus {
   }
 
   async put(actorToken: string, name: string, value: string, options: { expiresAt?: string; metadata?: Record<string, string> } = {}): Promise<SecretMetadata> {
-    const actor = this.authorize(actorToken, 'secrets:write');
+    const actor = await this.authorize(actorToken, 'secrets:write');
     this.validateName(name);
     if (!value) throw new VaultError('Secret value cannot be empty', 'INVALID');
     if (this.data.secrets.some(secret => secret.name === name)) throw new VaultError(`Secret '${name}' already exists; rotate it instead`, 'INVALID');
@@ -73,34 +73,35 @@ export class APIVaultPlus {
   }
 
   async get(actorToken: string, name: string): Promise<{ value: string; secret: SecretMetadata }> {
-    const actor = this.authorize(actorToken, 'secrets:read');
-    const record = this.findUsable(name, actor.label, 'secret.read');
+    const actor = await this.authorize(actorToken, 'secrets:read');
+    const record = await this.findUsable(name, actor.label, 'secret.read');
     const value = this.decrypt(record);
     this.audit('secret.read', actor.label, name, 'allowed');
     await this.persist();
     return { value, secret: this.metadata(record) };
   }
 
-  list(actorToken: string): SecretMetadata[] {
-    this.authorize(actorToken, 'secrets:read');
+  async list(actorToken: string): Promise<SecretMetadata[]> {
+    await this.authorize(actorToken, 'secrets:read');
     return this.data.secrets.map(secret => this.metadata(secret));
   }
 
   async rotate(actorToken: string, name: string, value: string, expiresAt?: string): Promise<SecretMetadata> {
-    const actor = this.authorize(actorToken, 'secrets:rotate');
+    const actor = await this.authorize(actorToken, 'secrets:rotate');
     if (!value) throw new VaultError('Secret value cannot be empty', 'INVALID');
-    const record = this.findUsable(name, actor.label, 'secret.rotate');
+    const record = await this.findUsable(name, actor.label, 'secret.rotate');
+    const validatedExpiry = expiresAt ? this.validateExpiry(expiresAt) : undefined;
     record.version += 1;
     record.ciphertext = this.encrypt(name, record.version, value);
     record.updatedAt = this.now().toISOString();
-    if (expiresAt) record.expiresAt = this.validateExpiry(expiresAt);
+    if (validatedExpiry) record.expiresAt = validatedExpiry;
     this.audit('secret.rotate', actor.label, name, 'allowed');
     await this.persist();
     return this.metadata(record);
   }
 
   async revoke(actorToken: string, name: string): Promise<void> {
-    const actor = this.authorize(actorToken, 'secrets:revoke');
+    const actor = await this.authorize(actorToken, 'secrets:revoke');
     const record = this.data.secrets.find(secret => secret.name === name);
     if (!record) throw new VaultError(`Secret '${name}' was not found`, 'NOT_FOUND');
     if (!record.revokedAt) record.revokedAt = this.now().toISOString();
@@ -108,8 +109,8 @@ export class APIVaultPlus {
     await this.persist();
   }
 
-  auditLog(actorToken: string): AuditEntry[] {
-    this.authorize(actorToken, 'audit:read');
+  async auditLog(actorToken: string): Promise<AuditEntry[]> {
+    await this.authorize(actorToken, 'audit:read');
     return this.data.audit.map(entry => ({ ...entry }));
   }
 
@@ -120,21 +121,22 @@ export class APIVaultPlus {
     return token;
   }
 
-  private authorize(token: string, scope: Scope): TokenRecord {
+  private async authorize(token: string, scope: Scope): Promise<TokenRecord> {
     const candidate = digest(token || '');
     const actor = this.data.tokens.find(item => timingSafeEqual(Buffer.from(item.hash, 'hex'), candidate));
     if (!actor || actor.revokedAt || !actor.scopes.includes(scope)) {
       this.audit('authorization', actor?.label ?? 'unknown', scope, 'denied');
+      await this.persist();
       throw new VaultError(`Missing required scope: ${scope}`, 'AUTH');
     }
     return actor;
   }
 
-  private findUsable(name: string, actor: string, action: string): SecretRecord {
+  private async findUsable(name: string, actor: string, action: string): Promise<SecretRecord> {
     const record = this.data.secrets.find(secret => secret.name === name);
     if (!record) throw new VaultError(`Secret '${name}' was not found`, 'NOT_FOUND');
-    if (record.revokedAt) { this.audit(action, actor, name, 'denied'); throw new VaultError(`Secret '${name}' is revoked`, 'REVOKED'); }
-    if (record.expiresAt && new Date(record.expiresAt) <= this.now()) { this.audit(action, actor, name, 'denied'); throw new VaultError(`Secret '${name}' is expired`, 'EXPIRED'); }
+    if (record.revokedAt) { this.audit(action, actor, name, 'denied'); await this.persist(); throw new VaultError(`Secret '${name}' is revoked`, 'REVOKED'); }
+    if (record.expiresAt && new Date(record.expiresAt) <= this.now()) { this.audit(action, actor, name, 'denied'); await this.persist(); throw new VaultError(`Secret '${name}' is expired`, 'EXPIRED'); }
     return record;
   }
 
